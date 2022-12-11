@@ -4,9 +4,11 @@ import gaime.networks.features as ft
 import functools as ftools
 import torch.nn.functional as fn
 import math
+import torch.optim as optim
 
 from torch.distributions import Categorical
 from dataclasses import dataclass
+from collections import deque
 
 @dataclass
 class Params:
@@ -15,9 +17,12 @@ class Params:
 	features_type: object = None
 	layers: int = 1
 	act: object = lambda i: torch.nn.ReLU()
+	discount: float = 0.001
 
 
-
+@dataclass
+class TrainParams:
+	epoch_length: int = 1000
 
 class A2C_Vis(nn.Module):
 	"""
@@ -55,18 +60,68 @@ class A2C_Vis(nn.Module):
 			self.__critic.add_module(f"Critic-Activation {i}", params.act(i))
 
 
+	# Cache optimizers for specific networks. Generally no reason remake them each time.
+	@ftools.lru_cache
+	def optim(self, tparam=None):
+		return optim.SGD(self.critic_parameters), optim.SGD(self.actor_parameters)
 
+	def actor_parameters(self):
+		yield from self.__features.parameters()
+		yield from self.__actor.parameters()
+
+	def critic_parameters(self):
+		yield from self.__critic.parameters()
+
+	def loss(self, actions, pis, crits, rws):
+		discs = rws + self.__params.discount * crits[1:] - crits[:-1]
+		exp = torch.log(pis) * discs
+
+		return (discs**2).mean(), exp.sum()
+		
 
 	def forward(self, x):
 		x = self.__features(x).flatten(start_dim=1)
-		return self.__actor(x), self.__critic(x)
+		if self.training:
+			return (self.__actor(x), self.__critic(x))
+		else:
+			return (self.__actor(x), None)
 
 	def action(self, x):
-		state = self(x)[0]
+		state, crit = self(x)
 
 		distr = fn.softmax(state, dim=1) 
 		choice = Categorical(distr).sample()
-		return (choice, distr)
+		return (choice, distr, crit)
 		
+	def train(self, env, tparam=None):
+		if self.training:
+			opt_c, opt_a = self.optim(tparam=tparam)
+
+			actions, pis, crits, rws = [], [], [], []
+			for step in range(tparam.epoch_length):
+				(a, p, c) = self.action(env.state), 
+				if env.finished:
+					env.reset()
+					crits.append(c)
+					break
+				else:				
+					rwrd = env.step(a[0])
+					actions.append(a)
+					pis.append(p[0][a[0]])
+					crits.append(c)
+					rws.append(rwrd)
+
+			actions = torch.cat(actions)
+			pis = torch.stack(pis)
+			crits = torch.stack(crits)
+			rws = torch.stack(rws)
+			lc, la = self.loss(actions, pis, crits, rws)
+
+			opt_c.zero_grad()
+			opt_a.zero_grad()
+			lc.backward(retain_graph=True)
+			la.backward(retain_graph=True)
+			opt_c.step()
+			opt_a.step()
 
 
