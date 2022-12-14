@@ -74,7 +74,11 @@ class A2C_Vis(nn.Module):
 
 	def loss(self, actions, pis, crits, rws):
 		discs = rws + self.__params.discount * crits[1:] - crits[:-1]
-		exp = torch.log(pis) * discs
+		exp = torch.log(pis)
+		# Cap the log, so that products with 0 become 0.
+		# This is about where torch.log's minimum gets to before becoming -inf.
+		exp = torch.max(exp, torch.tensor(-100.0))
+		exp = exp*discs
 
 		return (discs**2).mean(), exp.sum()
 		
